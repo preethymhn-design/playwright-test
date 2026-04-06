@@ -1,102 +1,207 @@
-# ragas-simple
+# Playwright RAG Test Generator
 
-A beginner-friendly, simplified version of the Ragas LLM evaluation toolkit.
+Automatically generate Playwright TypeScript test cases from your documentation using RAG (Retrieval-Augmented Generation).
 
-No complex type annotations, no abstract class maze — just clean, commented Python
-that's easy to read and understand.
+Drop in your specs, user stories, or any docs — the system embeds them into a vector store, retrieves the most relevant context for your query, and generates ready-to-run Playwright tests via an LLM.
 
-## What this does
+---
 
-Evaluates how good your RAG (Retrieval-Augmented Generation) pipeline is by
-scoring it across four key metrics:
-
-- **Faithfulness** — Is the answer grounded in the retrieved context?
-- **Context Precision** — Are the retrieved contexts actually relevant?
-- **Context Recall** — Did we retrieve all the context needed to answer?
-- **Answer Relevancy** — Does the answer actually address the question?
-
-## Free LLM providers (no paid key needed)
-
-| Provider | Free tier | How to get a key |
-|---|---|---|
-| Google Gemini | 15 req/min, 1M tokens/day | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
-| Groq | Generous free tier | [console.groq.com](https://console.groq.com) |
-| Ollama | Unlimited (runs locally) | [ollama.com](https://ollama.com) — no key needed |
-
-## Project layout
+## How It Works
 
 ```
-playwright-test/
-├── ragas_simple/
-│   ├── __init__.py          # Public API
-│   ├── sample.py            # EvalSample — one question/answer pair
-│   ├── dataset.py           # EvalDataset — list of samples + CSV/JSONL I/O
-│   ├── llm.py               # SimpleLLM — wraps Gemini / Groq / Ollama / OpenAI
-│   ├── evaluate.py          # evaluate() function + EvaluationResult
-│   └── metrics/
-│       ├── base.py               # BaseMetric (shared logic)
-│       ├── faithfulness.py       # Faithfulness metric
-│       ├── context_precision.py  # Context Precision metric
-│       ├── context_recall.py     # Context Recall metric
-│       └── answer_relevancy.py   # Answer Relevancy metric
-├── examples/
-│   ├── basic_rag_eval.py         # Full end-to-end example
-│   └── custom_llm_and_load_data.py
-├── tests/
-│   ├── test_sample_and_dataset.py  # No API key needed
-│   └── test_metrics_logic.py       # No API key needed
-├── requirements.txt
-├── Makefile
-└── README.md
+Your Docs (.md / .txt / .pdf)
+        ↓
+   LangChain Document Loaders
+        ↓
+   RecursiveCharacterTextSplitter
+        ↓
+   HuggingFace Embeddings (all-MiniLM-L6-v2, local)
+        ↓
+   FAISS Vector Store
+        ↓
+   LangChain LCEL Retrieval Chain
+        ↓
+   ChatGroq LLM → Playwright TypeScript Tests
 ```
 
-## Quick start
+---
+
+## Project Structure
+
+```
+playwright_rag/
+  vector_store.py     # In-memory vector DB with cosine similarity search
+  ingestor.py         # Loads and chunks .md / .txt / .pdf files
+  generator.py        # Retrieves context and generates Playwright tests
+  cli.py              # Command-line interface
+
+ragas_simple/         # RAG evaluation framework (faithfulness, precision, recall)
+docs/                 # Put your spec/documentation files here
+generated_tests/      # Generated .spec.ts files land here
+run_playwright_rag.py # Demo script
+run_groq_eval.py      # RAG evaluation script
+```
+
+---
+
+## Setup
+
+### 1. Install dependencies
 
 ```bash
 pip install -r requirements.txt
-
-# Option A — Google Gemini (free, recommended)
-export GEMINI_API_KEY="your-key"
-python examples/basic_rag_eval.py
-
-# Option B — Groq (free, fast)
-export GROQ_API_KEY="your-key"
-# edit basic_rag_eval.py: change provider="gemini" to provider="groq"
-
-# Option C — Ollama (fully local, no key needed)
-ollama pull llama3.2
-# edit basic_rag_eval.py: change provider="gemini" to provider="ollama"
+pip install langchain langchain-community langchain-groq langchain-huggingface faiss-cpu sentence-transformers
 ```
 
-## Basic usage
-
-```python
-from ragas_simple import evaluate, EvalSample, EvalDataset
-from ragas_simple.metrics import faithfulness, context_precision
-
-samples = [
-    EvalSample(
-        user_input="What is the capital of France?",
-        retrieved_contexts=["Paris is the capital and largest city of France."],
-        response="The capital of France is Paris.",
-        reference="Paris",
-    )
-]
-
-dataset = EvalDataset(samples=samples)
-
-# Uses Gemini by default (free) — change provider= for others
-result = evaluate(dataset, metrics=[faithfulness, context_precision], provider="gemini")
-print(result)
-# {'faithfulness': 1.0, 'context_precision': 1.0}
+For PDF support:
+```bash
+pip install pypdf
 ```
 
-## Run tests (no API key needed)
+### 2. API Keys
+
+The app uses **Groq** (free) as the default LLM provider. The key is pre-configured in `ragas_simple/llm.py`.
+
+To use a different provider, set the environment variable:
+
+| Provider | Environment Variable | Free Tier |
+|----------|---------------------|-----------|
+| Groq     | `GROQ_API_KEY`      | Yes       |
+| Gemini   | `GEMINI_API_KEY`    | Yes       |
+| OpenAI   | `OPENAI_API_KEY`    | No        |
+| Ollama   | *(none needed)*     | Local     |
+
+---
+
+## Usage
+
+### Option A — Python Script (quickest)
+
+1. Add your docs to the `docs/` folder
+2. Run:
 
 ```bash
-python tests/test_sample_and_dataset.py
-python tests/test_metrics_logic.py
+python run_playwright_rag.py
+```
 
-# or with pytest
-python -m pytest tests/ -v
+Generated tests are saved to `generated_tests/`.
+
+To change the queries, edit the `queries` list in `run_playwright_rag.py`:
+
+```python
+queries = [
+    "user login with valid and invalid credentials",
+    "checkout flow from cart to order confirmation",
+    "password reset flow",
+]
+```
+
+---
+
+### Option B — CLI
+
+**Ingest documents:**
+
+```bash
+# Ingest a whole folder
+python -m playwright_rag.cli ingest docs/
+
+# Ingest a single file
+python -m playwright_rag.cli ingest docs/my_spec.md
+
+# Custom chunk size
+python -m playwright_rag.cli ingest docs/ --chunk-size 400 --overlap 40
+```
+
+**Generate tests:**
+
+```bash
+# Minimal — auto-ingests docs/ and prints to terminal
+python -m playwright_rag.cli generate "checkout process"
+
+# With output file
+python -m playwright_rag.cli generate "checkout process" --out generated_tests/checkout.spec.ts
+
+# With custom docs folder + output file
+python -m playwright_rag.cli generate "checkout process" --docs docs/ --out generated_tests/checkout.spec.ts
+```
+
+---
+
+### Option C — Python API
+
+```python
+from playwright_rag import VectorStore, Ingestor, TestGenerator
+
+# 1. Setup — FAISS + HuggingFace embeddings (LangChain)
+store = VectorStore()  # loads all-MiniLM-L6-v2 locally
+
+# 2. Ingest your docs
+ingestor = Ingestor(store, chunk_size=500, overlap=50)
+ingestor.ingest_folder("docs/")          # folder
+ingestor.ingest_file("my_spec.md")       # single file
+ingestor.ingest_text("raw text...", source="inline")  # raw string
+
+# 3. Generate tests (LangChain LCEL chain + ChatGroq)
+gen = TestGenerator(store, top_k=5, provider="groq")
+
+tests = gen.generate("user registration flow")
+print(tests)
+
+# With context visibility
+result = gen.generate_with_context("login page validation")
+print(result["tests"])    # generated TypeScript
+print(result["context"])  # retrieved chunks with scores
+```
+
+---
+
+## Adding Your Own Documents
+
+Just drop files into `docs/` — any of these formats work:
+
+- `.md` — Markdown specs, user stories, feature descriptions
+- `.txt` — Plain text documentation
+- `.pdf` — PDF specs or design documents (requires `pip install pypdf`)
+
+The more detail your docs contain (selectors, URLs, expected messages, flows), the better the generated tests will be.
+
+---
+
+## Evaluating RAG Quality
+
+The `ragas_simple` module evaluates how well the RAG pipeline performs across four metrics:
+
+| Metric | What it measures |
+|--------|-----------------|
+| Faithfulness | Are generated answers grounded in the retrieved context? |
+| Context Precision | Are retrieved chunks actually relevant? |
+| Context Recall | Does the context cover the reference answer? |
+| Answer Relevancy | Does the answer address the question? |
+
+Run the evaluation:
+
+```bash
+python run_groq_eval.py
+```
+
+Results are saved to `eval_results.csv`.
+
+---
+
+## Supported LLM Providers
+
+```python
+# Groq (free, fast — default)
+llm = SimpleLLM(provider="groq")
+
+# Google Gemini (free tier)
+llm = SimpleLLM(provider="gemini")
+
+# OpenAI
+llm = SimpleLLM(provider="openai", model="gpt-4o-mini")
+
+# Ollama (fully local, no API key)
+# First run: ollama pull llama3.2
+llm = SimpleLLM(provider="ollama")
 ```

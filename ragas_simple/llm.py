@@ -30,6 +30,13 @@
 import json
 import os
 
+# Load .env file if present (keys stay out of source control)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 
 class SimpleLLM:
     """
@@ -78,7 +85,7 @@ class SimpleLLM:
     # Default models for each provider
     DEFAULT_MODELS = {
         "openai": "gpt-4o-mini",
-        "gemini": "gemini-1.5-flash",
+        "gemini": "gemini-2.0-flash",
         "groq": "llama-3.1-8b-instant",
         "ollama": "llama3.2",
     }
@@ -89,6 +96,11 @@ class SimpleLLM:
         "gemini": "GEMINI_API_KEY",
         "groq": "GROQ_API_KEY",
         "ollama": None,  # no key needed
+    }
+
+    HARDCODED_KEYS = {
+        "gemini": os.environ.get("GEMINI_API_KEY", ""),
+        "groq": os.environ.get("GROQ_API_KEY", ""),
     }
 
     def __init__(self, provider="gemini", model=None, api_key=None, base_url=None):
@@ -103,9 +115,13 @@ class SimpleLLM:
         self.provider = provider
         self.model = model or self.DEFAULT_MODELS[provider]
 
-        # Resolve API key
+        # Resolve API key — hardcoded > explicit arg > env var
         env_var = self.ENV_VARS[provider]
-        self.api_key = api_key or (os.environ.get(env_var) if env_var else None)
+        self.api_key = (
+            api_key
+            or self.HARDCODED_KEYS.get(provider)
+            or (os.environ.get(env_var) if env_var else None)
+        )
 
         if provider != "ollama" and not self.api_key:
             raise ValueError(
@@ -130,16 +146,13 @@ class SimpleLLM:
             return OpenAI(api_key=self.api_key)
 
         elif self.provider == "gemini":
-            # google-generativeai uses its own client style
             try:
-                import google.generativeai as genai
+                from google import genai
             except ImportError:
                 raise ImportError(
-                    "Install the Gemini SDK: pip install google-generativeai"
+                    "Install the Gemini SDK: pip install google-genai"
                 )
-            genai.configure(api_key=self.api_key)
-            # Return the genai module itself — we'll call it in ask()
-            return genai
+            return genai.Client(api_key=self.api_key)
 
         elif self.provider == "groq":
             # Groq has an OpenAI-compatible API
@@ -239,18 +252,13 @@ class SimpleLLM:
         return response.choices[0].message.content.strip()
 
     def _ask_gemini(self, prompt, system_prompt=None):
-        """Used for Google Gemini via the google-generativeai SDK."""
-        genai = self.client
-
-        # Combine system prompt and user prompt for Gemini
-        # (Gemini Flash supports system_instruction in GenerativeModel)
+        """Used for Google Gemini via the google-genai SDK."""
         full_prompt = prompt
         if system_prompt:
             full_prompt = f"{system_prompt}\n\n{prompt}"
 
-        model = genai.GenerativeModel(self.model)
-        response = model.generate_content(
-            full_prompt,
-            generation_config=genai.types.GenerationConfig(temperature=0),
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=full_prompt,
         )
         return response.text.strip()
