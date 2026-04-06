@@ -1,0 +1,12 @@
+# Core (always needed)
+openai>=1.0.0          # used by groq + ollama providers (OpenAI-compatible API)
+
+# Free provider — Google Gemini (recommended)
+# Get a free key at https://aistudio.google.com/apikey
+google-generativeai>=0.7.0
+
+# For answer_relevancy metric with non-OpenAI providers (local embeddings, ~90MB)
+sentence-transformers>=2.0.0
+
+# Utilities
+tqdm>=4.0.0
