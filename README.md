@@ -9,25 +9,29 @@ No hallucination. Every selector, URL, and assertion in the generated tests come
 ## Table of Contents
 
 1. [How It Works](#how-it-works)
-2. [Architecture](#architecture)
-3. [Project Structure](#project-structure)
-4. [Prerequisites](#prerequisites)
-5. [Installation](#installation)
-6. [Configuration](#configuration)
-7. [Writing Good Documentation](#writing-good-documentation)
-8. [Generating Tests](#generating-tests)
-9. [Running Tests](#running-tests)
-10. [npm Scripts Reference](#npm-scripts-reference)
-11. [Python CLI Reference](#python-cli-reference)
-12. [RAG Evaluation](#rag-evaluation)
-13. [Supported LLM Providers](#supported-llm-providers)
-14. [Troubleshooting](#troubleshooting)
+2. [Understanding the Vector Database](#understanding-the-vector-database)
+3. [Step-by-Step Deep Dive](#step-by-step-deep-dive)
+4. [Architecture](#architecture)
+5. [Project Structure](#project-structure)
+6. [Prerequisites](#prerequisites)
+7. [Installation](#installation)
+8. [Configuration](#configuration)
+9. [Writing Good Documentation](#writing-good-documentation)
+10. [Generating Tests](#generating-tests)
+11. [Running Tests](#running-tests)
+12. [npm Scripts Reference](#npm-scripts-reference)
+13. [Python CLI Reference](#python-cli-reference)
+14. [RAG Evaluation](#rag-evaluation)
+15. [Supported LLM Providers](#supported-llm-providers)
+16. [Troubleshooting](#troubleshooting)
 
 ---
 
 ## How It Works
 
-The system follows an 8-step pipeline every time you run `npm run generate`:
+Think of this system like a very smart librarian. You give the librarian a shelf of books (your docs). When you ask a question ("generate tests for the login page"), the librarian doesn't read every book from scratch. Instead, they already have a mental map of every paragraph — they instantly find the most relevant pages and hand them to the AI, which then writes the tests based only on those pages.
+
+Here is the full pipeline in plain terms:
 
 ```
 Step 1 — You write documentation (.md / .txt / .pdf)
@@ -43,13 +47,13 @@ Step 3 — Chunking (RecursiveCharacterTextSplitter)
          Overlap of 50 characters ensures context is not lost at boundaries
 
 Step 4 — Embedding (HuggingFace all-MiniLM-L6-v2)
-         Each chunk is converted to a 384-dimensional vector
+         Each chunk is converted to a 384-dimensional vector (a list of 384 numbers)
          Runs entirely on your local machine — no API key needed
          Model is downloaded once (~90MB) and cached
 
 Step 5 — Vector Store (FAISS in-memory index)
          All chunk vectors are stored in a FAISS index
-         Enables fast cosine similarity search across all your docs
+         Lives in RAM — fast to search, rebuilt each run from your docs
 
 Step 6 — Retrieval (Similarity Search)
          Your query is embedded using the same model
@@ -77,6 +81,375 @@ The LLM prompt enforces five strict rules:
 5. Every URL, error message, and assertion must be copied exactly from the context
 
 This means if your docs say `input#ap_email`, the test will use `input#ap_email`. If your docs don't mention a field, it won't appear in the test.
+
+---
+
+## Understanding the Vector Database
+
+This is the heart of the system. Understanding it will help you write better docs and get better tests.
+
+### What is a vector?
+
+A vector is just a list of numbers. For example:
+
+```
+"Login page: input#ap_email"  →  [0.12, -0.45, 0.88, 0.03, ..., 0.67]
+                                   ↑ 384 numbers total
+```
+
+The embedding model (all-MiniLM-L6-v2) converts any piece of text into 384 numbers. These numbers capture the *meaning* of the text — not just the words, but what the text is about.
+
+Two pieces of text that mean similar things will produce vectors that are numerically close to each other. Two unrelated pieces of text will produce vectors that are far apart.
+
+```
+"user login form"          →  [0.12, -0.45, 0.88, ...]   ← close together
+"sign in with email"       →  [0.11, -0.43, 0.90, ...]   ← (similar meaning)
+
+"shopping cart subtotal"   →  [0.78,  0.22, -0.31, ...]  ← far away
+                                                            (different topic)
+```
+
+### What is FAISS?
+
+FAISS (Facebook AI Similarity Search) is the vector database used in this project. It is a library that:
+
+- Stores thousands of vectors in memory
+- Can search through all of them in milliseconds
+- Finds the vectors most similar to a query vector (nearest neighbour search)
+
+Think of it like a search engine, but instead of matching keywords, it matches *meaning*.
+
+### Where is the vector database stored?
+
+The FAISS index in this project is **in-memory only**. This means:
+
+- It lives in RAM while the Python process is running
+- It is rebuilt from scratch every time you run `npm run generate`
+- It does not persist to disk between runs
+- There is no database file to find on your filesystem
+
+This is intentional — your docs are small enough that rebuilding takes only a few seconds, and it keeps the setup simple with no database management needed.
+
+If you want to inspect what is in the store at runtime, the `VectorStore` class in `playwright_rag/vector_store.py` exposes:
+
+```python
+len(store)          # total number of chunks stored
+store.search("login page", top_k=3)  # returns top 3 matching chunks
+```
+
+### What does the database look like internally?
+
+Conceptually, the FAISS index holds a table like this:
+
+```
+┌────────┬──────────────────────────────────────────────────────────────────┬──────────────────────────────┐
+│ Index  │ Vector (384 numbers)                                             │ Metadata                     │
+├────────┼──────────────────────────────────────────────────────────────────┼──────────────────────────────┤
+│   0    │ [0.12, -0.45, 0.88, 0.03, 0.71, -0.22, ..., 0.67]              │ source: amazon_login_spec.md │
+│   1    │ [0.09, -0.41, 0.85, 0.07, 0.68, -0.19, ..., 0.71]              │ source: amazon_login_spec.md │
+│   2    │ [0.78,  0.22, -0.31, 0.55, -0.44, 0.13, ..., 0.02]             │ source: amazon_cart_spec.md  │
+│   3    │ [0.81,  0.19, -0.28, 0.51, -0.41, 0.17, ..., 0.05]             │ source: amazon_cart_spec.md  │
+│   4    │ [0.33, -0.12,  0.55, 0.29,  0.60, -0.08, ..., 0.44]            │ source: amazon_search_spec.md│
+│  ...   │ ...                                                              │ ...                          │
+└────────┴──────────────────────────────────────────────────────────────────┴──────────────────────────────┘
+```
+
+Each row is one chunk of text from your docs, stored as its vector representation alongside the source filename.
+
+### How does search work?
+
+When you run `npm run generate -- "amazon login flow"`:
+
+1. The query `"amazon login flow"` is converted to a vector: `[0.10, -0.44, 0.87, ...]`
+2. FAISS computes the distance between this query vector and every stored vector
+3. The 5 closest vectors are returned (top-K search)
+4. The original text chunks for those vectors are retrieved
+5. Those text chunks become the context sent to the LLM
+
+```
+Query vector:  [0.10, -0.44, 0.87, ...]
+
+Distances:
+  chunk 0 (login spec)   → distance 0.05  ← very close (relevant)
+  chunk 1 (login spec)   → distance 0.08  ← close (relevant)
+  chunk 2 (cart spec)    → distance 0.72  ← far (not relevant)
+  chunk 3 (cart spec)    → distance 0.75  ← far (not relevant)
+  chunk 4 (search spec)  → distance 0.41  ← medium
+
+Top-5 returned: chunks 0, 1, 4, and 2 closest others
+```
+
+The distance metric used is L2 (Euclidean distance). Lower distance = more similar = more relevant.
+
+### Why rebuild every run instead of persisting?
+
+For this use case, rebuilding is the right choice because:
+
+- Your docs folder is small (a few KB of markdown files)
+- Rebuilding takes 2–5 seconds
+- You always get a fresh, consistent index that reflects your latest docs
+- No stale data from previous runs
+- No database files to manage or version
+
+If your docs grow very large (hundreds of files), you could save and load the FAISS index using LangChain's built-in persistence:
+
+```python
+# Save to disk
+store._db.save_local("faiss_index")
+
+# Load from disk next time
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
+embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
+```
+
+This would create a `faiss_index/` folder with two files:
+- `faiss_index/index.faiss` — the binary vector index
+- `faiss_index/index.pkl` — the text chunks and metadata
+
+---
+
+## Step-by-Step Deep Dive
+
+This section walks through exactly what happens, step by step, when you run a single command.
+
+### The command
+
+```bash
+npm run generate -- "amazon login flow"
+```
+
+---
+
+### Step 1 — npm hands off to generate.js
+
+`package.json` maps `npm run generate` to `node generate.js`. The `--` separator passes everything after it as arguments to the script.
+
+`generate.js` does three things:
+
+```javascript
+const query = process.argv[2];
+// query = "amazon login flow"
+
+const filename = query.trim().toLowerCase()
+  .replace(/\s+/g, '_')
+  .replace(/[^a-z0-9_]/g, '') + '.spec.ts';
+// filename = "amazon_login_flow.spec.ts"
+
+const cmd = `python -m playwright_rag.cli generate "${query}" --docs docs/ --out generated_tests/${filename}`;
+execSync(cmd, { stdio: 'inherit' });
+```
+
+It converts your query into a safe filename and calls the Python CLI.
+
+---
+
+### Step 2 — Python CLI starts up
+
+`playwright_rag/cli.py` parses the arguments:
+
+```
+query   = "amazon login flow"
+docs    = "docs/"
+out     = "generated_tests/amazon_login_flow.spec.ts"
+top_k   = 5
+provider = "groq"
+```
+
+It then initialises the `VectorStore`, which loads the embedding model into memory.
+
+---
+
+### Step 3 — Embedding model loads
+
+`playwright_rag/vector_store.py` creates a `HuggingFaceEmbeddings` instance:
+
+```python
+self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+```
+
+The model `all-MiniLM-L6-v2` is a small, fast sentence transformer. It was trained to understand the semantic meaning of sentences. It runs entirely on your CPU — no GPU needed, no internet call.
+
+First run: downloads ~90MB to `~/.cache/huggingface/hub/`
+Subsequent runs: loads from cache in under 1 second.
+
+---
+
+### Step 4 — Documents are loaded from docs/
+
+`playwright_rag/ingestor.py` walks the `docs/` folder and loads each file:
+
+```
+docs/amazon_login_spec.md     → UnstructuredMarkdownLoader
+docs/amazon_search_spec.md    → UnstructuredMarkdownLoader
+docs/amazon_product_spec.md   → UnstructuredMarkdownLoader
+docs/amazon_cart_spec.md      → UnstructuredMarkdownLoader
+docs/amazon_checkout_spec.md  → UnstructuredMarkdownLoader
+docs/amazon_orders_spec.md    → UnstructuredMarkdownLoader
+```
+
+Each file is read as plain text. Markdown formatting (headers, bullets) is preserved as text.
+
+---
+
+### Step 5 — Documents are split into chunks
+
+`RecursiveCharacterTextSplitter` splits each document into overlapping chunks:
+
+```
+chunk_size = 500 characters
+chunk_overlap = 50 characters
+separators = ["\n\n", "\n", ".", " ", ""]
+```
+
+Example — this section of `amazon_login_spec.md`:
+
+```markdown
+## UI Elements
+
+### Email / Phone Step
+- Email input: `input#ap_email`
+- Continue button: `input#continue`
+- Password input: `input#ap_password`
+- Sign-In button: `input#signInSubmit`
+- Error message container: `div.a-alert-content`
+
+### Error Messages
+- Invalid email: `div.a-alert-content` containing "We cannot find an account"
+- Wrong password: `div.a-alert-content` containing "Your password is incorrect"
+```
+
+Gets split into chunks like:
+
+```
+Chunk 0: "## UI Elements\n\n### Email / Phone Step\n- Email input: `input#ap_email`\n
+          - Continue button: `input#continue`\n- Password input: `input#ap_password`\n
+          - Sign-In button: `input#signInSubmit`\n- Error message container: `div.a-alert-content`"
+
+Chunk 1: "- Error message container: `div.a-alert-content`\n\n### Error Messages\n
+          - Invalid email: `div.a-alert-content` containing \"We cannot find an account\"\n
+          - Wrong password: `div.a-alert-content` containing \"Your password is incorrect\""
+```
+
+Notice chunk 1 starts with the last line of chunk 0 — that is the 50-character overlap, ensuring no information is lost at the boundary.
+
+---
+
+### Step 6 — Chunks are embedded and stored in FAISS
+
+Each chunk is passed through the embedding model to produce a 384-number vector:
+
+```
+Chunk 0 text  →  model  →  [0.12, -0.45, 0.88, 0.03, ..., 0.67]  (384 numbers)
+Chunk 1 text  →  model  →  [0.09, -0.41, 0.85, 0.07, ..., 0.71]  (384 numbers)
+Chunk 2 text  →  model  →  [0.78,  0.22, -0.31, 0.55, ..., 0.02]  (384 numbers)
+...
+```
+
+All vectors are added to the FAISS index in memory. The original text and source filename are stored alongside each vector.
+
+For a typical docs folder with 6 files, this produces around 30–50 chunks total.
+
+---
+
+### Step 7 — Your query is embedded and searched
+
+The query `"amazon login flow"` is converted to a vector using the same model:
+
+```
+"amazon login flow"  →  model  →  [0.10, -0.44, 0.87, 0.05, ..., 0.69]
+```
+
+FAISS computes the L2 distance between this query vector and every stored vector. The 5 chunks with the smallest distance (most similar meaning) are returned.
+
+For the query `"amazon login flow"`, the top results would be chunks from `amazon_login_spec.md` because those chunks contain text about login — email inputs, passwords, sign-in buttons — which is semantically close to the query.
+
+---
+
+### Step 8 — Context is formatted and sent to the LLM
+
+The 5 retrieved chunks are formatted into a context block:
+
+```
+[Source: amazon_login_spec.md]
+## URL
+Login page: https://www.amazon.in/ap/signin
+
+---
+
+[Source: amazon_login_spec.md]
+### Email / Phone Step
+- Email input: `input#ap_email`
+- Continue button: `input#continue`
+...
+
+---
+
+[Source: amazon_login_spec.md]
+### Error Messages
+- Wrong password: "Your password is incorrect"
+...
+```
+
+This context block, along with the query and the strict system prompt, is sent to the Groq LLM via LangChain's LCEL chain:
+
+```python
+chain = (
+    {"context": retriever | format_docs, "query": RunnablePassthrough()}
+    | PROMPT_TEMPLATE   # system prompt + context + query
+    | self.lc_llm       # ChatGroq (llama-3.1-8b-instant)
+    | StrOutputParser() # extract text from response
+)
+```
+
+---
+
+### Step 9 — LLM generates the test code
+
+The LLM receives the context and the strict system prompt that says:
+
+> Use ONLY the selectors, URLs, field names, and error messages that appear verbatim in the CONTEXT. Do NOT invent anything.
+
+The LLM outputs raw TypeScript:
+
+```typescript
+import { test, expect } from '@playwright/test';
+
+test.describe('Amazon Login Flow', () => {
+  test('Successful login with valid credentials', async ({ page }) => {
+    // Navigate to login page
+    await page.goto('https://www.amazon.in/ap/signin');
+    // Enter email
+    await page.fill('input#ap_email', 'user@example.com');
+    // Click continue
+    await page.click('input#continue');
+    // Enter password
+    await page.fill('input#ap_password', 'password123');
+    // Click sign in
+    await page.click('input#signInSubmit');
+    // Verify redirect to home
+    await expect(page).toHaveURL('https://www.amazon.in');
+  });
+  ...
+});
+```
+
+Every selector (`input#ap_email`, `input#continue`, `input#signInSubmit`) came directly from the retrieved context. The LLM did not invent them.
+
+---
+
+### Step 10 — Output is cleaned and saved
+
+`_clean_output()` strips any accidental markdown fences the LLM might add:
+
+```python
+fenced = re.search(r"```(?:typescript|ts)?\s*\n(.*?)```", text, re.DOTALL)
+if fenced:
+    return fenced.group(1).strip()
+```
+
+The clean TypeScript is written to `generated_tests/amazon_login_flow.spec.ts`.
 
 ---
 
