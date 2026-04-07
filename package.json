@@ -1,4 +1,12 @@
 {
+  "name": "playwright-rag-test-generator",
+  "version": "1.0.0",
+  "description": "RAG-powered Playwright test generator — ingests docs, generates .spec.ts files via LLM",
+  "scripts": {
+    "generate": "node generate.js",
+    "test": "npx playwright test",
+    "test:report": "npx playwright test --reporter=html && npx playwright show-report"
+  },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
     "typescript": "^6.0.2"

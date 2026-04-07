@@ -7,28 +7,34 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from ragas_simple.llm import SimpleLLM
 
-SYSTEM_PROMPT = """You are an expert Playwright test automation engineer.
-Output ONLY raw TypeScript code. No markdown fences, no prose, no explanations, no backticks.
-The output must be a valid, directly executable .spec.ts file.
-Use @playwright/test imports. Write clean Page Object Model style tests with descriptive names, assertions, and inline comments.
-Base your tests ONLY on the provided context."""
+SYSTEM_PROMPT = """You are a Playwright test automation engineer.
+Your ONLY job is to output raw TypeScript test code — no markdown, no backticks, no prose, no explanations.
+The output must be a valid, directly executable .spec.ts file starting with the import statement.
+
+STRICT RULES — you MUST follow these without exception:
+1. Use ONLY the selectors, URLs, field names, and error messages that appear verbatim in the CONTEXT.
+2. Do NOT invent, assume, or guess any UI element, route, or behaviour not explicitly stated in the CONTEXT.
+3. If the CONTEXT does not mention something, do not test it.
+4. Every locator (input[name=...], button#id, div.class, href) must come directly from the CONTEXT.
+5. Every expected URL, error message, and text assertion must be copied exactly from the CONTEXT."""
 
 PROMPT_TEMPLATE = ChatPromptTemplate.from_messages([
     ("system", SYSTEM_PROMPT),
-    ("human", """Generate Playwright TypeScript test cases for the following query using the provided context.
+    ("human", """Generate Playwright TypeScript tests for the query below.
+Use ONLY the information in the CONTEXT. Do not add anything not present in the CONTEXT.
 
 QUERY: {query}
 
-CONTEXT:
+CONTEXT (this is the only source of truth — do not go beyond it):
 {context}
 
-Rules:
-- Output ONLY valid TypeScript. No markdown, no backticks, no explanation text.
-- Start directly with: import {{ test, expect }} from '@playwright/test';
-- Include a test.describe block with multiple test cases
-- Cover happy path and all edge cases mentioned in the context
-- Use proper locators from the context (selectors, URLs, error messages)
-- Add short inline comments per step
+Output requirements:
+- Start with: import {{ test, expect }} from '@playwright/test';
+- One test.describe block named after the feature
+- One test() per scenario mentioned in the CONTEXT
+- Locators, URLs, and assertions copied exactly from the CONTEXT
+- Short inline comment per step
+- No markdown, no backticks, no explanation text outside the TypeScript code
 """),
 ])
 
