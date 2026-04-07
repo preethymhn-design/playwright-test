@@ -508,7 +508,65 @@ The clean TypeScript is written to `generated_tests/amazon_login_flow.spec.ts`.
 
 ---
 
-## Project Structure
+## Execution Trace
+
+A quick reference showing which file and function handles each stage of the pipeline, with the most important line highlighted.
+
+```
+npm run generate -- "amazon login flow"
+```
+
+| # | What happens | File | Function / Line | Key line |
+|---|-------------|------|-----------------|----------|
+| 1 | npm triggers the wrapper script | `package.json` | `scripts.generate` | `"generate": "node generate.js"` |
+| 2 | Query received, filename derived | `generate.js` | top-level, line 7 | `const query = process.argv[2]` |
+| 3 | Filename built from query | `generate.js` | line 16 | `query.trim().toLowerCase().replace(/\s+/g, '_')` |
+| 4 | Python CLI invoked | `generate.js` | line 19–24 | `execSync(cmd, { stdio: 'inherit' })` |
+| 5 | CLI args parsed | `playwright_rag/cli.py` | `main()`, line 78 | `args = parser.parse_args()` |
+| 6 | VectorStore initialised | `playwright_rag/cli.py` | `get_store()`, line 22 | `_store = VectorStore()` |
+| 7 | Embedding model loaded | `playwright_rag/vector_store.py` | `__init__()`, line 20 | `self.embeddings = HuggingFaceEmbeddings(model_name=model_name)` |
+| 8 | FAISS index created (empty) | `playwright_rag/vector_store.py` | `__init__()`, line 21 | `self._db = None` |
+| 9 | Auto-ingest triggered | `playwright_rag/cli.py` | `cmd_generate()`, line 42 | `ingestor.ingest_folder(docs_source)` |
+| 10 | Each doc file loaded | `playwright_rag/ingestor.py` | `ingest_folder()`, line 47 | `self.ingest_file(os.path.join(root, fname))` |
+| 11 | File read by LangChain loader | `playwright_rag/ingestor.py` | `ingest_file()`, line 35 | `docs = self._load_md(path)` |
+| 12 | Text split into chunks | `playwright_rag/ingestor.py` | `ingest_file()`, line 38 | `chunks = self.splitter.split_documents(docs)` |
+| 13 | Chunks embedded + stored in FAISS | `playwright_rag/vector_store.py` | `add_documents()`, line 31 | `self._db = FAISS.from_documents(docs, self.embeddings)` |
+| 14 | TestGenerator created | `playwright_rag/cli.py` | `cmd_generate()`, line 50 | `gen = TestGenerator(store, top_k=args.top_k, provider=args.provider)` |
+| 15 | ChatGroq LLM initialised | `playwright_rag/generator.py` | `__init__()`, line 55 | `self.lc_llm = ChatGroq(api_key=simple.api_key, model=simple.model, temperature=0)` |
+| 16 | generate_with_context called | `playwright_rag/cli.py` | `cmd_generate()`, line 53 | `result = gen.generate_with_context(args.query)` |
+| 17 | Top-5 chunks retrieved from FAISS | `playwright_rag/vector_store.py` | `search()`, line 44 | `results = self._db.similarity_search_with_score(query, k=top_k)` |
+| 18 | LangChain LCEL chain built | `playwright_rag/generator.py` | `_build_chain()`, line 74 | `chain = ({"context": retriever \| format_docs, "query": RunnablePassthrough()} \| PROMPT_TEMPLATE \| self.lc_llm \| StrOutputParser())` |
+| 19 | Chain invoked with query | `playwright_rag/generator.py` | `generate()`, line 96 | `return self._clean_output(chain.invoke(query))` |
+| 20 | Markdown fences stripped | `playwright_rag/generator.py` | `_clean_output()`, line 103 | `fenced = re.search(r"\`\`\`(?:typescript\|ts)?\\s*\\n(.*?)\`\`\`", text, re.DOTALL)` |
+| 21 | Test file written to disk | `playwright_rag/cli.py` | `cmd_generate()`, line 68 | `f.write(result["tests"])` |
+
+### Call chain summary
+
+```
+npm run generate -- "amazon login flow"
+  └── generate.js : line 24        execSync(cmd)
+        └── cli.py : main()        line 78   parse_args()
+              └── cli.py : cmd_generate()
+                    line 22   get_store() → VectorStore.__init__()
+                    │           vector_store.py line 20  HuggingFaceEmbeddings()
+                    │           vector_store.py line 21  self._db = None
+                    │
+                    line 42   ingestor.ingest_folder("docs/")
+                    │           ingestor.py line 47  ingest_file() per file
+                    │           ingestor.py line 35  _load_md() / TextLoader
+                    │           ingestor.py line 38  splitter.split_documents()
+                    │           vector_store.py line 31  FAISS.from_documents()
+                    │
+                    line 50   TestGenerator(store, ...)
+                    │           generator.py line 55  ChatGroq(api_key, model)
+                    │
+                    line 53   gen.generate_with_context(query)
+                                vector_store.py line 44  similarity_search_with_score()
+                                generator.py line 74  _build_chain()
+                                generator.py line 96  chain.invoke(query)
+                                generator.py line 103 _clean_output()
+                                cli.py line 68        f.write(result["tests"])
+```
 
 ```
 playwright-test/
