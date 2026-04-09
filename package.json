@@ -4,8 +4,10 @@
   "description": "RAG-powered Playwright test generator — ingests docs, generates .spec.ts files via LLM",
   "scripts": {
     "generate": "node generate.js",
-    "test": "npx playwright test",
-    "test:report": "npx playwright test --reporter=html && npx playwright show-report"
+    "test": "npx playwright test generated_tests/* --headed",
+    "test:headless": "npx playwright test generated_tests/*",
+    "test:report": "npx playwright test generated_tests/* --reporter=html && npx playwright show-report",
+    "test:ui": "npx playwright test generated_tests/* --ui"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
