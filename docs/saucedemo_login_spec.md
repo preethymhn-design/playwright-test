@@ -3,6 +3,8 @@
 ## URL
 Login page: https://www.saucedemo.com/
 
+**IMPORTANT:** The login page is at the root URL `https://www.saucedemo.com/` - do NOT append `/login` to the URL.
+
 ## Test Credentials
 
 ### Valid Users
